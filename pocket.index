@@ -1,0 +1,18 @@
+# This is an example of an index file for use with the pocket gopher daemon.
+# Use this to tell pocket what files you wish to serve. All paths are relative
+# to your root gopher directory, that is: if you store your files in /var/gopher
+# a line like /About.txt will allow you to serve the file /var/gopher/About.txt
+# which would have a URL like gopher://yoursite.org/0/About.txt. You are encour-
+# aged to list each file you wish to serve individually or to use pindex to 
+# automatically generate such lists, but you can also allow pocket to serve all
+# files in a directory by including a line with a single asterisk like so:
+# /adirectory/*. If you want to automatically serve all files in all directories
+# within a directory you can use a double-asterisk like so: /adirectory/**.
+# If you use such globbing capabilities, all new files added to globbed directories
+# will be served without be specifically added to your serve list. If you want
+# to serve most files but want to hide certain ones, you can begin a line with
+# an exclamation mark like so: !/foo/a_hiddle_file.jpg, which will keep that
+# file from being served even if it is included in a globbed directory.
+/
+/gm
+/About.txt

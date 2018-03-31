@@ -1,0 +1,40 @@
+CAPS
+# The all capitals 'CAPS' must start a Caps file to let clients know
+# that the file has successfully loaded.
+#
+# Caps files are a relatively new addition to gopher. If you place
+# a Caps file in your root directory some newer clients will be able
+# to get extra information about your server. If you decide not to
+# include a caps file, all clients will work fine with your server.
+
+# This lets the client know what version of Caps is being used.
+CapsVersion=1
+
+# This tells the client in seconds when it should recheck the Caps file
+# to see if it's changed.
+ExpireCapsAfter=3600
+
+
+# Lets clients know what seperates files and directories in your path.
+# '/' should be fine on all Unix-like systems.
+PathDelimiter=/
+
+# Current directory signifier, like in the Unix shell.
+PathIdentity=.
+
+# Path to parent directory, like in the Unix shell
+PathParent=..
+
+# This should only be set to TRUE on Classic Mac OS, which pocket
+# does not support.
+PathParentDouble=FALSE
+
+#
+PathEscapeCharacter=
+#
+PathKeepPreDelimiter=FALSE
+ServerSoftware=pocket
+ServerSoftwareVersion=0.1alpha
+ServerArchitecture=
+ServerDescription=
+ServerGeolocationString=

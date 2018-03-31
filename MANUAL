@@ -1,0 +1,297 @@
+           ^__^
+    _____ / o.o\
+        \ \  m_/
+         \/    \   
+         |      |
+        _|      |_  
+       /__\____/__\
+ -- pocket: here to serve --
+ 
+The Pocket gopher daemon aims to be a freely available, stable, secure, and well-featured Gopher 
+daemon. 
+	* Freely Available: Pocket is free and unencumbered software released into the public domain
+	  under the terms of the Unlicense (http://unlicense.org). This means it can be used and 
+	  modified by anyone, anywhere, for any purpose.
+	  
+	* Stable: Pocket aims to be functional and as free of bugs as possible. You should be able
+	  to run it and forget about it. As this is an alpha release, this goal may not yet be fully 
+	  realized, but it has passed the first stages of testing.
+	  
+	* Secure: Pocket aims to minimize the security risks running a public server may pose. It 
+	  features a non-permisive server model reminiscent of GN or the WN web server, disables
+	  CGI by default, and allows the server to remove dangerous characters from client input
+	  before passing it on to executable scripts.
+	  
+	* Well-featured: Pocket does not intend to be the most feature-rich server in Gopherspace,
+	  nor does it intend to be the leanest and meanest. Pocket aims to implement a range of useful
+	  features while avoiding excess bloat. It currently supports auto-generating menus, running 
+	  CGI scripts using standard CGI variables, personal gopher spaces for server users, and an
+	  extended version of the gophermap standard.
+
+Pocket is also alpha software that has had no production testing as of this release. Additionally,
+it was written by a hobbyist in order to learn server programming and to improve his knowledge of Ruby.
+If pocket falls short of its lofty goals, these may be the reasons why.
+	  
+1. INSTALLING POCKET
+
+2. BASIC SET-UP
+
+	* Configuring pocket
+	
+	* Getting ready to serve files
+
+	* Writing your own gophermaps
+
+	* Automatic directory listing
+
+3. ADVANCED SET-UP
+	
+	* CGI
+	
+	* Personal gopher space
+	
+4. HACKING POCKET
+
+	* Modifying pocket
+	
+	* Contributing code to pocket
+
+INSTALLING POCKET
+=================
+
+To install pocket simply move the appropriate files to the appropriate directories. pocket 
+should go to someplace like /usr/local/bin or /usr/bin. Make sure pocket is executable by 
+doing something like "chmod 755 pocket". pocket.conf would sit nicely in /etc, and pocket.log.
+pocket.pid needs to be in /var/run and pocket.index should be in the root directory for your 
+server (i.e. /var/gopher).
+
+Make sure pocket.log is writable by the user you intend to run pocket as (i.e. "gopher," "www," 
+or "nobody"), since pocket drops root privileges permanently before writing to its log.
+
+Once everything is where it should be, open pocket in your preferred text editor and make sure
+that Conf_file matches the absolute path to your pocket.conf file, or pocket will load its 
+default settings. 
+
+BASIC SET-UP 
+============
+
+CONFIGURING POCKET
+------------------
+
+After installation, you may tweak pocket to your liking by editing the pocket.conf file, which
+provides fairly fine-grained control over how pocket behaves. For more detail on pocket's various
+configuration options, please consult the comments in pocket.conf.
+
+Pocket supports on-the-fly configuration updates. If you decide to change any settings after you
+have pocket up and running, simply re-edit pocket.conf, save your changes, and use the command
+'sudo kill -1 {pocket's PID}' to tell pocket to reload the configuration file.
+
+
+GETING READY TO SERVE FILES
+---------------------------
+
+Unlike most servers, but like the GN Gopher/HTTP server and the WN web server, pocket will not 
+serve any files or directories without your explicit permission, giving you complete control 
+over your content. This prevents any malicious scripts that might get inserted into your Gopher 
+directories from being served and allows you to temorarily not serve files or directories 
+that you are updating without having to remove them entirely from your gopher directories.
+
+To serve a file, you add its path relative to your server's root directory to your pocket.index
+file. If you have a file named 'About.txt' in your root directory and a sub-directory named 'foo'
+with a file 'bar.txt', and you want to serve all of them, your index file would look like this:
+/
+/About.txt
+/foo
+/foo/bar.txt
+This will server your two directories and the files within them.
+
+Of course, adding every file individual can get quite tedious, especially if you add more
+than a few at a time. To alleviate such tedium, you may use the utility pindex, which is 
+part of the pocket distribution, to add directories to pocket.index. If you run pindex 
+without arguments, pindex will add all the files in the present working directory to 
+your pckt.index file if your present working directory is within your server's root
+directory. Running pindex with the argument 'all' will add all files within your 
+server's heirarchy. Running pindex with the argument all and the name of a directory or
+directories will recursively add all files and directories within the directories listed. 
+Running pindex with the name of one or more directories will add the files within 
+the listed directories to pckt.index.
+
+Another option is to give the permission to serve all files in a directory by adding 
+a line like '/foo/*', which will serve all files in your foo directory. You can add a line
+like '/foo/**' to permit the serving of all files and directories within foo recursively. 
+If you have directories 'baz' and 'quux' within 'foo' such a line will serve both 
+directories and any files or additional directories within them.
+
+Sometimes you may want to serve all but one or two files in a directory. You could either
+add the name of every file except the ones you want to hide or you could add lines like
+the following to your pocket.index:
+/foo/*
+!/foo/hidden1
+!/foo/hidden2
+Any line beginning with an exclaimation mark will not be served. 
+
+If you want pocket to act just like a permissive server, you can add the line '/**' to your 
+pocket.index. This will match every file and directory in your root directory recursively.
+This is obviously not recommended.
+
+
+WRITING YOUR OWN GOPHERMAPS
+---------------------------
+
+Pocket, like most modern gopher servers, supports gophermap map files, which allows the server
+administrator to decide how directories appear to clients. A basic gophermap file might look 
+like this:
+
+Welcome to my server!
+0About This Server<TAB>/About.txt
+1Some Directory<TAB>/dir
+1Another Server<TAB>/<TAB>host.org<TAB>70
+hA Web Link<TAB>URL:http://website.org
+
+A line of text by itself is displayed as informational text. Lines beginning with a Gopher item
+type (more on item types momentarily) and followed by a tab character are treated as links. If
+no host or port number is provided, pocket presumes that the file is within its directories. If
+a host and port are provided, pocket will display a link to another host. If 'URL:' follows the 
+tab, pocket provides a link to a non-Gopher server.
+
+Gopher item types are how a server tells the client what kind of file to expect. Pocket supports
+the following item types:
+
+   0   Text file
+   1   Directory
+   2   CSO phone-book server
+   3   Error
+   4   BinHexed Macintosh file
+   5   Any binary archive
+   6   Uuencoded file
+   7   Index-Search server
+   8   Telnet session
+   9   Binary file
+   +   Redundant server
+   T   tn3270 session
+   g   GIF image
+   I   Any non-GIF image file
+   h   HTML file or Web-link
+   x   XML file
+   d   Any document file (PDF, PostScript, or word processor formats)
+   s   Any audio file
+   ;   Any video file 
+   
+Most of these are defined in RFC 1436, but item types 'h', 'x', 'd', 's', and ';' are extensions
+that are fairly common in modern usage, but are not supported by all clients. OverbiteFF recognizes
+'d', 's', and ';'. Lynx recognizes 's' and ';'. DiggerDwarf and redgopher recognize 's'. Type 'h' 
+is recognized by most clients.
+
+Pocket also supports two extensions to standard gophermaps introduced by Gophernicus. 
+Any line that begins with an exclaimation mark ('!') will be treated as a TITLE resource. 
+For a description of TITLE resources, please see:
+http://thread.gmane.org/gmane.network.gopher.general/3107. Any line beginning with an
+equals sign ('=') will be treated as an executable script to be run and then displayed
+as informational text, if you enable running scripts from gophermaps. Otherwise, lines 
+begining with '=' are ignored. Pocket handles lines beginning with '=' differently than
+Gophernicus so gophermaps using them may or may not require some modification if switching
+from one server to the other.
+
+Pocket also allows you to include comments in your gophermaps. Any line beginning with a
+pound sign ('#') will be ignored when your gophermap file is being parsed by pocket. This
+can be used to temporarily remove files from gophermap listings.
+
+To use a gophermap to list the contents of a directory create a file named 'gophermap'
+or 'gm' in your directory and edit according to the guidelines above. If you create a
+file with each name, pocket will read the one named 'gophermap' and ignore the one named
+'gm', but it will also think you are rude.
+
+Pocket also allows you to create gophermaps with arbitrary names if they end with a 
+specific file extension. The default extension for this option is 'gmap', but you can
+set it to whatever you like. This allows you to create pseudo-directories, which
+may be useful to some.
+
+
+AUTOMATIC DIRECTORY LISTING
+---------------------------
+
+If you don't want to write out gophermaps yourself, pocket will happily generate directory
+listings for you. Pocket is able to recognize many file types automatically, including many
+obscure file-types. Any files it cannot recognize will be served as text files. Automatic
+directory listings will ignore files and directories not included in pocket.index.
+
+
+CGI
+---
+
+If Enable_CGI is set to "yes" then pocket will execute any scripts it is allowed to serve.
+Pocket does not limit CGI scripts to particular directories or file extensions, although
+you may do so if you like. Pocket's set-up allows you to serve dynamic content without
+forcing you to reveal to the user that they're not viewing static content.
+
+Pocket does not pass any information to a script's standard input, but it does allow your
+script to access several environmental variables, which it can use to interact with the
+server and client. These variables are
+
+	SERVER_NAME: set to the value of "Host"
+	SERVER_PROTOCOL: set to "Gopher"
+	SERVER_PORT: set to the port your server is bound to
+	QUERY_STRING: parameters passed to server from the client
+	SCRIPT_NAME: the name of script, including its path from the server's root directory
+	PATH: set to an empty string
+	REMOTE_ADDR: the IP address of the client
+	REMOTE_PORT: the port the client sent its request on
+	SERVER_SOFTWARE: set to the name and version number of pocket
+	
+Like Bucktooth and Pygopherd, pocket also passes two more variables that can be used by CGI
+scripts. This is done primarily for backwards compatability with scripts that may use these 
+variables.
+
+	REQUEST: the same as SCRIPT_NAME
+	SELECTOR: the same as SCRIPT_NAME plus QUERY_STRING, that is: "/path/to/script?client input"
+
+You can enable pocket to scrub potentially dangerous characters out of client input via pocket.conf.
+	
+PERSONAL GOPHER SPACE
+---------------------
+
+If your server allows multiple users via shell or ftp account, you can easily allow these users
+to set up their own personal gopher spaces. User CGI and gophermap scripts are enabled seperately 
+from general CGI and gophermap scripts, thus enabling CGI for the server doesn't mean you have to
+let users run unvetted scripts.
+
+Users also must maintain their own index file for their directories. The user index file must
+have the same name as the server's index file.
+
+HACKING POCKET
+==============
+
+MODIFYING POCKET
+----------------
+
+pocket is free (as in beer and thought), open source software written in Ruby, so you are free to
+modify the code in any way you see fit. If you're feeling creative, fire up your favorite text editor
+and go to town.
+
+CONTRIBUTING CODE TO POCKET
+---------------------------
+
+I'm always happy to get bugfixes, code improvements, and feature suggestions, after all I work
+on pocket in my free time, so the more work you do, the easier my life is. However, pocket is 
+public domain work, which means all code submissions must also be released into the public 
+domain. If you'd like to have your code included in pocket, please send me an email at 
+wt_at_sdf.lonestar.org. Please include this statement (borrowed from the good folks at 
+Unlicense.org) with your code: 
+
+	This is free and unencumbered software released into the public domain.
+
+	Anyone is free to copy, modify, publish, use, compile, sell, or
+	distribute this software, either in source code form or as a compiled
+	binary, for any purpose, commercial or non-commercial, and by any
+	means.
+
+	In jurisdictions that recognize copyright laws, the author or authors
+	of this software dedicate any and all copyright interest in the
+	software to the public domain. We make this dedication for the benefit
+	of the public at large and to the detriment of our heirs and
+	successors. We intend this dedication to be an overt act of
+	relinquishment in perpetuity of all present and future rights to this
+	software under copyright law.
+
+Of course, if you don't want your code to be public domain (how selfish!), you can always create
+a fork of pocket, after all it's free software.

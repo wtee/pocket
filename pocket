@@ -1,0 +1,452 @@
+#!/usr/pkg/bin/ruby
+
+# Pocket: a public domain gopher daemon.
+# This is free and unencumbered software released into the public domain
+# under the terms of the Unlicense <http://unlicense.org>.
+#
+# pocket includes code adapted from Rob Sayer's public domain GopherBlock server/application toolkit.
+
+require 'socket'
+require 'etc'
+require 'find'
+
+Conf_file = '/etc/pckt.conf'
+Name = "pocket 0.1"
+
+# Load settings from configuration file and then define values for the server
+def load_conf 
+	conf = Hash.new
+	File.open(Conf_file, 'r').each do |line|
+		if line.match(/^\w+\s*=/) then
+			key, value = line.rstrip.split(/\s*=\s*/)
+			conf[key] = value
+		end
+	end
+	
+	# General settings
+	$root_dir = conf['Root_dir'] || '/var/gopher'
+	$gmap_ext = conf['Gmap_ext'] || 'gmap'
+	$server_user = conf['Server_user'] || 'nobody'
+	$log_file = conf['Log_file'] || '/var/log/pocket.log'
+	$pid_file = conf['Pid_file'] || '/var/run/pocket.pid'
+	$serve_index = conf['Serve_index'] || '/var/gopher/pocket.index'
+	
+	# Connection settings
+	$host = conf['Host'] ||'localhost' 
+	$port = conf['Port'].to_i || 70
+	$use_ipv6 = conf['Use_IPv6'] || 'no'
+	$q_len = conf['Q_len'].to_i || 10
+	$max_forks = conf['Max_forks'].to_i || 5
+	
+	# General CGI options
+	$enable_cgi = conf['Enable_CGI'] || 'no'
+	$enable_gmap_scripts = conf['Enable_gmap_scripts'] || 'no'
+	$prescrub_client_input = conf['Prescrub_client_input'] || 'yes'
+	$scrub_level = conf['Scrub_level'] || 'paranoid'
+	
+	# Personal Gopherspace options
+	$enable_user_gophers = conf['Enable_user_gophers'] || 'no'
+	$user_gopher_dir = conf['User_gopher_dir'] || 'public_gopher'
+	$path_to_user_home = conf['Path_to_user_home'] || '/home'
+	$user_prefix = conf['User_prefix'] || ''
+	$enable_user_cgi = conf['Enable_user_CGI'] || 'no'
+	$enable_user_gmap_scripts = conf['Enable_user_gmap_scripts'] || 'no'
+	
+	# Figure out what files pocket is allowed to serve
+	$serve_list = parse_serve_index($serve_index, $root_dir)
+end
+
+# Handle requests: this is the work-horse of this little server
+def parse_req(cl_soc, cl_addr)
+	request = cl_soc.gets.chomp
+	
+	path = ''
+	param = ''
+	g_plus = ''
+	user_name = ''
+	user_serve_list = Array.new
+	if request.include?("\t") then										
+		request, g_plus = request.split("\t")
+	elsif request.include?("?") then
+		request, param = request.split("?")	
+	end
+	
+	# Scrub client input? How hard?
+	if $prescrub_client_input == 'yes' && param != '' then
+		if $scrub_level == 'strict' then
+			param.scrub!('strict')
+		elsif $scrub_level == 'paranoid' then
+			param.scrub!('paranoid')
+		else
+			param.scrub!
+		end
+	end
+	
+	# Is request a Gopher+ request? If so, we don't jive that way
+	if g_plus == '$' then 												
+		cl_soc.write(g_plus_req)
+		log('Gopher+ request', cl_addr.inspect_sockaddr, request, g_plus)
+		return
+
+	# This bit sets the path to the file requested by the client. It checkes to see if the
+	# request is for a user directory (and if so, can we access it or not) or part of the
+	# server's regular directory structure
+	elsif request.match(/#{$user_prefix}\/~.+/) then
+		if $enable_user_gophers == 'yes' then
+			user_name = request.sub(/^.*~/, '').sub(/\/.*/, '')
+			user_root_dir = "#{$path_to_user_home}/#{user_name}/#{$user_gopher_dir}".gsub(/\/+/, '/')
+			if File.exists?(user_root_dir) then
+				path = "#{user_root_dir}/#{request.sub(/~/, '').sub(/#{user_name}/, '').sub(/#{$user_prefix}/, '')}".gsub(/\/+/, '/')
+				user_serve_list = parse_serve_index("#{user_root_dir}/#{File.basename($serve_index)}", user_root_dir)
+				if !user_serve_list.include?(path) then
+					cl_soc.write not_found(request)
+					log('File not in user\'s serve list', cl_addr.inspect_sockaddr, request, param)
+					return
+				else 
+					return_req(request, path, cl_soc, cl_addr, param, user_serve_list)
+				end
+			else
+				cl_soc.write not_found(request)
+				log('User directory not found', cl_addr.inspect_sockaddr, request, param)
+				return
+			end
+		else
+			cl_soc.write not_found(request)
+			log('User directories not enabled', cl_addr.inspect_sockaddr, request, param)
+			return
+		end
+	else
+		path = "#{$root_dir}/#{request}".gsub(/\/+/, '/')
+		if !$serve_list.include?(path) then
+			cl_soc.write not_found(request)
+			log('File not in serve list', cl_addr.inspect_sockaddr, request, param)
+			return
+		else 
+			return_req(request, path, cl_soc, cl_addr, param, $serve_list)
+		end
+	end
+end
+	
+# If the client's request is legitimate, this will return the request
+def return_req(request, path, cl_soc, cl_addr, param, serve_list)
+
+	# If file is a Web URL then get thee gone from here
+	if path.match(/URL:/) then
+		cl_soc.write web_url(request.sub(/URL:/, ''))
+		log('URL redirection', cl_addr.inspect_sockaddr, request, param, serve_list)
+	
+	# Now its time to try and serve our own files. If file doesn't exist or isn't readable, give up
+	elsif !File.exists?(path) then
+		cl_soc.write not_found(request)
+		log('Request does not exist', cl_addr.inspect_sockaddr, request, param)
+	elsif !File.readable?(path) then
+		cl_soc.write not_found(request)
+		log('Request is not readable', cl_addr.inspect_sockaddr, request, param)
+		
+	# Spit out happy little directory listings and check for map files
+	elsif File.directory?(path) then
+		if File.exists?("#{path}/gophermap") then
+			 cl_soc.write read_gm("#{path}/gophermap")
+		elsif File.exists?("#{path}/gm") then
+			 cl_soc.write read_gm("#{path}/gm")
+		else 
+			cl_soc.write read_dir(path, serve_list)
+		end
+		log('Directory request', cl_addr.inspect_sockaddr, request, param)
+	elsif path.match(/\.#{$gmap_ext}$/) then
+		cl_soc.write read_gm(path)
+		log('Psuedo-directory request', cl_addr.inspect_sockaddr, request, param)
+		
+	# Comence to wrestling with executable files. If scripts are allowed
+	# pocket will run them, otherwise it serves the script as a regular file
+	elsif File.executable?(path) then
+		if path.match(/#{$path_to_user_home}/) && $enable_user_cgi == 'yes' then				
+			set_env(cl_addr, request, param)
+			cl_soc.write %x{#{path}}
+			log('User CGI request', cl_addr.inspect_sockaddr, request, param)
+		elsif !path.match(/#{$path_to_user_home}/) && $enable_cgi == 'yes' then
+			set_env(cl_addr, request, param)
+			cl_soc.write %x{#{path}}
+			log('CGI request', cl_addr.inspect_sockaddr, request, param)			
+		else	
+			cl_soc.write File.open(path).read
+			log('File request', cl_addr.inspect_sockaddr, request, param)
+		end
+		
+	# Default to serving a file by reading it out to the client
+	else
+		cl_soc.write File.open(path).read
+		log('File request', cl_addr.inspect_sockaddr, request, param)
+	end
+end
+
+# Read and return gophermap formatted files
+def read_gm(gm)
+	lines = Array.new
+	gmap = File.open(gm, "r")
+	while line = gmap.gets			
+		line.chomp!
+		if !line.match(/^\#/) then
+			if line.match(/^=/) then
+				if gm.match(/#{$path_to_user_home}/) && $enable_user_gmap_scripts == 'yes' then
+			 		lines << "i#{`#{line.sub(/^=/, '')}`.chomp}\tnull\ttext\t#{$port}"		 	
+		 		elsif !gm.match(/#{$path_to_user_home}/) && $enable_gmap_scripts == 'yes' then
+			 		lines << "i#{`#{line.sub(/^=/, '')}`.chomp}\tnull\ttext\t#{$port}"
+			 	else 
+			 		next
+			 	end
+		 	elsif line.match(/^!/) then
+		 		lines << "i#{line.sub(/^!/, '')}\tTITLE\ttext\t#{$port}"
+		 	else
+		 		item_info = line.split(/\t/)
+				if item_info.length < 2
+					lines <<  "i#{line}\tnull\ttext\t#{$port}"
+			 	else
+			 	item_info[2] = $host if !item_info[2]
+			 	item_info[3] = $port if !item_info[3]
+			 	lines << item_info.join("\t")
+			 	end
+			end
+		end 
+	end
+	lines.join("\r\n")
+end
+
+# Read system directory and return it as a gopher menu
+def read_dir(path, serve_list)
+	lines = Array.new
+	Dir.entries(path).each do |item|
+		if serve_list.include?("#{path}/#{item}".gsub(/\/+/,'/')) then
+			lines << "#{get_type("#{path}/#{item}").gsub(/\/+/,'/')}#{item}\t#{path.sub(/#{$root_dir}/, '')}/#{item}\t#{$host}\t#{$port}" 
+		end
+	end
+	lines.join("\r\n")
+end
+
+# Interpret a serve_index-formatted file and decide what pocket is allowed to serve
+def parse_serve_index(serve_index, root_dir)
+	serve_list = Array.new
+	if File.exists?(serve_index) then
+		ignore_list = Array.new
+		File.open(serve_index, 'r').each do |line|
+			path = "#{root_dir}#{line.gsub(/[\*\!]/, '').chomp.rstrip}".gsub(/\/+/, '/')
+			if !line.match(/^\!/) && line.match(/\/\*$/) && File.exists?(path) then
+				Dir.foreach(path) do |entry|
+					if !entry.match(/^\.\.$/) then
+						serve_list << "#{path}#{entry}".gsub(/\/+/, '/')
+					end
+				end
+			elsif !line.match(/^\!/) && line.match(/\/\*\*$/) && File.exists?(path) then
+				Find.find(path) do |entry|
+					serve_list << entry	
+				end
+			elsif !line.match(/^\!/) && File.exists?(path) then
+				serve_list << path
+			elsif line.match(/^\!/) then
+				ignore_list << path
+			end
+		end
+		serve_list -= ignore_list
+	end
+	return serve_list
+end
+
+# Oh no! Where's your file?
+def not_found(request)
+	"3Sorry, '#{request}' doesn't exist!\tnull\ttext\t#{$port}\r\ni This resource cannot be located.\tnull\ttext\t#{$port}"
+end
+
+# Kludge our way out of Gopher+ sessions
+def g_plus_req
+	return "+-1\r\n+INFO: 1Main menu (non-gopher+)	/	#{$host}	#{$port}\r\n+ADMIN:\r\nAdmin: Server Administrator\r\nServer: \r\n+VIEWS:\r\napplication/gopher+-menu: <512b>\r\n+ABSTRACT:\r\n#{Name} does not support Gopher+. Nice to see\r\nyour vintage client, though. Keep on keepin' on.\r\n"
+end
+
+# Kludge our way around dumb clients that don't recognize URL links
+def web_url(url)
+	return %{
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2 Final//EN"><html>
+	<head>
+		 <meta http-equiv="content-type" content="text/html;charset=UTF-8">
+		 <meta http-equiv="Refresh" content="2; url=#{url}">
+		<title>Redirection</title>
+	</head>
+	<body>
+	<p>You are following a link to a web site. You will be automatically redirected to the web site shortly. If you are not redirected, please click <a href="#{url.sub(/url:/i, '')}">here</a> to go to the web site.</p>
+	</body>
+</html>
+	}
+end
+
+# Initialize environmental variables for CGI scripts
+def set_env(cl_addr, script, param)
+	ENV['SERVER_PROTOCOL'] = 'Gopher'
+	ENV['SERVER_NAME'] = $host
+	ENV['SERVER_PORT'] = "#{$port}"
+	ENV['QUERY_STRING'] = param
+	ENV['SCRIPT_NAME'] = script
+	ENV['REQUEST'] = param != '' ? "#{script}?#{param}" : script
+	ENV['SELECTOR'] = script
+	ENV['PATH'] = ''
+	ENV['REMOTE_ADDR'] = cl_addr.ip_address
+	ENV['REMOTE_PORT'] = cl_addr.ip_port.to_s
+	ENV['SERVER_SOFTWARE'] = Name
+end
+
+# Identify the gopher menu item type of a file when reading from a directory
+def get_type(file) #add zoo to archive
+	File.directory?(file) ? '1' :
+	file.match(/\.(te?xt|shar|bat|sh|pl|rb|py|php|c|bas|scm|css|tex)$/i) ? '0' :
+	file.match(/\.gif$/i) ? 'g' :
+	file.match(/\.(exe|app|s?o|dll|a|dylib|out|com|bin)$/i) ? '9' :
+	file.match(/\.(t?[rbgzx7z]?z|[xtjrd]?ar|ar[jc]?|cpio|cab|cfs|zip|shk|[bz]oo|dwc|hpk|hyp|ish|pak|com|sq(z|x)|ace|alz|sit|dmg|iso|lbr|dd|cpt|paq|pea|pit|sea|rpm|deb)$/i) ? '5' :
+	file.match(/\.(jpe?g|tif+|png|webp|bmp|p[pgbn]m|pcx|svg|tga|tpic|ecw|pgf|pict|ico)$/i) ? 'I' :
+	file.match(/\.(xml|rss|atom)$/i) ? 'x' :
+	file.match(/\.[drx]?html?$/i) ? 'h' :
+	file.match(/\.hqx$/i) ? '4' :
+	file.match(/\.uu$/i) ? '6' :
+	file.match(/\.(pd[fbg]|ps|docx?|odt|rtfd?|bean|sxw|djvu?|epub|azw|aeh|lr[fx]|chm|dnl|fb2|[xc]eb|lit|prc|mobi|opf|tr[23]|abw|pages|wp[ds4-7]?|cwk|mwd|pap|wr[ifd]|etf|tmd|mellell|uof|o?xps|lwp)$/i) ? 'd' :
+	file.match(/\.(mp[123cp+]|aac|wa?v|oga|flac|spx|cdda|aiff?|ra|lqt|m4a|tta|wma|ape|amr|midi?|vqf|vox|swa|xmf)$/i) ? 's' :
+	file.match(/\.(flv|mpe?g|avi|dat|rv|svi|swf|wmv|ogv|mts|mov|divx|mkv|m4v)$/i) ? ';' :
+	File.binary?(file) ? '9' :
+	'0';
+end
+
+# Write to server log file
+def log(status, cl_addr = '', request = '', param = '')
+    l = File.open($log_file, 'a') 
+    l.flock(File::LOCK_EX)
+    l.puts "#{Time.now.to_s} -- #{cl_addr} -- status: #{status} --> #{request} #{param} \n"
+    l.flock(File::LOCK_UN)
+    l.close
+end
+
+# Check if a file is binary or not, used with get_type
+class File
+    def self.binary?(name)	
+		return false if !File.exist?(name)
+		myStat = stat(name)
+		return false unless myStat.file?
+		open(name) { |file|
+			blk = file.read(myStat.blksize)
+	  	  	return false if blk.nil?
+	  	  	return  blk.size == 0 ||
+	  	  	blk.count("^ -~", "^\r\n") / blk.size > 0.3 ||
+	  	  	blk.count("\x00") > 0
+		}
+	end
+end
+
+# Clean up dirty input
+class String
+	def scrub!(level = 'gentle')
+		#--Remove everything except alpha-numeric characters and spaces--#
+		if level == 'paranoid' then
+			gsub!(/[^[:alnum:] ]/, '')
+			
+		#--Remove characters that seem out of place in regular input.--# 
+		else
+			gsub!(/[\]\/\;\[\\`{}[:cntrl:]^<>*|~]/, '')
+	
+			#--Remove chacters that may be dangerous or legitimate.--#
+			if level == 'strict' then
+				gsub!(/[()!&?$+=-]/, '')
+				gsub!(/'/, "''")
+			end
+		end
+	end
+end
+		
+# Get daemonic: fork into the background, become session leader, and fork into the background
+# again. This sets the server up as a proper daemon with no controlling terminal
+exit if fork
+Process.setsid
+exit if fork
+
+# Redirect any output to the bottomless abyss so that it doesn't pop up on any random terminal
+# screens
+#$stdout.reopen('/dev/null', 'w')
+#$stderr.reopen('/dev/null', 'w')
+
+# Load configurations
+load_conf
+
+# Record the server's process identification number, so it's easier to track down and kill
+File.open($pid_file, 'w') do |f|
+    f.print $$
+    f.close
+end
+
+# Set up the server connection
+if $use_ipv6 == 'yes' then
+	server = Socket.new(Socket::AF_INET6, Socket::SOCK_STREAM, 0)
+elsif $use_ipv6 == 'unspec' then
+	server = Socket.new(Socket::AF_UNSPEC, Socket::SOCK_STREAM, 0)
+else
+	server = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
+end
+
+addr = Socket.pack_sockaddr_in($port, $host) 
+server.bind(addr)
+server.listen($q_len)
+
+# Switch to unpriveleged user before handling requests. Now that pocket's bound to a socket
+# there's no need to keep root privileges
+Process::Sys.setgid(Etc.getpwnam($server_user).gid)
+Process::Sys.setuid(Etc.getpwnam($server_user).uid)
+
+# Clear environmental variables to give the mischevious less to play with
+ENV.clear
+
+# Change our present working directory to the server's root directory. Should help limit any
+# mischief to public folders
+Dir.chdir($root_dir)
+
+# Trap sytem signals sent to our lovely little server and then bow to their whims
+Signal.trap('HUP') { load_conf; log('Reloading configurations due to SIG_HUP') }
+Signal.trap('TERM') { server.close; log('Exiting due to SIG_TERM'); exit }
+
+# Initialize an array to keep our children in line
+pid_list = Array.new
+
+# Here, at long last, is the server loop
+loop do 
+	cl_soc, cl_addr = server.accept
+	# Check to see if a child process has exited or not
+	if pid_list.length > 0 then
+		pid_list.shift if !system("kill -0 #{pid_list[0]} 2> /dev/null")
+	end
+	
+	# Fork a new child process to handle requests if there aren't too many brats already
+	# running around
+	if pid_list.length < $max_forks then
+		pid = fork do
+			begin
+        			server.close
+				parse_req(cl_soc, cl_addr)
+				cl_soc.write "\r\n.\r\n"
+				exit
+			rescue
+				log('Unable to handle request!', cl_addr.inspect_sockaddr)
+				exit
+			end
+		end
+		cl_soc.close
+		
+		# Detatch the forked child so the loop can continue to accept connections. Add
+		# the child's process ID to the list so we can keep tabs on when it exits
+		Process.detach(pid)
+		pid_list.push(pid)
+	else
+	
+	    	# If there are too many forks tell the client so and close the connection
+		request = cl_soc.gets.chomp
+		cl_soc.write "3Server is temporarily unavailable. Please try again shortly.\tnull\ttext\t#{$port}\r\n.\r\n"
+		cl_soc.close
+		log('Server overloaded', cl_addr.inspect_sockaddr, request)
+	end
+
+	# Check to see if a child process has exited or not
+	if pid_list.length > 0 then
+		pid_list.shift if !system("kill -0 #{pid_list[0]} 2> /dev/null")
+	end
+end		

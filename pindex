@@ -1,0 +1,56 @@
+# pindex 0.1
+# generate index-file listings for the Pocket Gopher Daemon.
+
+# USAGE
+# running pindex without arguments will add all the files in the present working
+# directory to your pckt.index file if your present working directory is within
+# your server's root directory. Running pindex with the argument 'all' will add
+# all files within your server's heirarchy. Running pindex with the argument all
+# and the name of a directory or directories will recursively add all files and
+# directories within the directories listed. Running pindex with the name of 
+# one or more directories will add the files within the listed directories to
+# pckt.index.
+
+# pindex is free and unencumbered software released into the public domain
+# under the terms of the Unlicense <http://unlicense.org>.
+
+Conf_file = '/etc/pckt.conf'
+conf = Hash.new
+File.open(Conf_file, 'r').each do |line|
+	if line.match(/^(Root_dir|Serve_index)/) then
+		key, value = line.rstrip.split(/\s*=\s*/)
+		conf[key] = value
+	end
+end
+
+entry_list = Array.new
+
+if ARGV.empty? then
+        if Dir.pwd.match(/^#{conf['Root_dir']}/) then
+		dir = Dir.pwd
+		Dir.foreach(dir) do |entry| 
+			entry_list << entry if !entry.match(/(\.|\.\.)/)
+		end
+	end
+elsif ARGV[0] == 'all' && ARGV.length == 1 then
+	Find.find(conf['Root_dir']) do |entry|
+		entry_list << entry
+	end
+elsif ARGV[0] == 'all' && ARGV.length > 1 then
+	ARGV[1..-1].each do |dir|
+	dir = conf['Root_dir'] + '/' + dir if !dir.match(/^#{conf['Root_dir']}/)
+	Find.find(dir) do |entry|
+		entry_list << entry
+	end
+elsif !ARGV.include(all) then
+	ARGV.each do |dir|
+		Dir.foreach(dir) do |entry|
+			entry_list << entry if !entry.match(/(\.|\.\.)/)
+		end
+	end
+end
+
+index = File.open(conf['Serve_index'], 'a')
+entry_list.each do |entry|
+	index.puts entry.sub(/#{conf['Root_dir']}/, '')
+end
